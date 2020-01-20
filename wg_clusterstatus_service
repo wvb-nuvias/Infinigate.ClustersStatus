@@ -1,0 +1,260 @@
+#!/bin/bash
+#title : 	wg_clusterstatus_service
+#description :	This script will be in cron, check all clusters'status
+#author :	Wouter Vanbelleghem<wouter.vanbelleghem@nuvias.com> 
+#date :		04/02/2019 
+#version :	0.1 
+#==============================================================================
+
+NL="<br>"
+
+function trim() {
+        echo -e "$1" | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//'
+}
+
+function dat() {
+        d=$(date -d $1 +%d)
+        m=$(date -d $1 +%m)
+        y=$(date -d $1 +%Y)
+        echo "$d-$m-$y"
+}
+
+function dattim() {
+		d=$(date +%d)
+		m=$(date +%m)
+        y=$(date +%Y)
+        h=$(date +%H)
+        m=$(date +%M)
+        s=$(date +%S)
+
+        echo "$d-$m-$y $h:$m:$s"
+}
+
+function getrole() {
+	tmp=""
+	if [[ $1 == 1 ]]; then
+		tmp="Idle"
+	fi
+	if [[ $1 == 2 ]]; then
+                tmp="Backup Master"
+        fi
+	if [[ $1 == 3 ]]; then
+                tmp="Master"
+        fi
+	if [[ $1 == 4 ]]; then
+                tmp="Inactive"
+        fi
+	echo $tmp;
+}
+
+function clearvars() {
+	cluster_id=""
+	cluster_device_id=""
+	cluster_name=""
+	cluster_hostname=""
+	cluster_sysname=""
+	snmp_auth=""
+	snmp_user=""
+	snmp_password_1=""
+	snmp_protocol_1=""
+	snmp_version=""
+	snmp_password_2=""
+	snmp_protocol_2=""
+	snmp_community=""
+}
+
+conffile="/etc/watchguard/wg.conf" 
+start=$(date +%s) 
+
+declare -A config
+
+#read the config file in /etc/watchguard, if it don't exist use default values
+if [[ -e $conffile ]]; then
+	while read line
+	do
+	    if [[ $line == *"="* && $line != *"#"* ]]; then
+       		key=$(echo "$line" | cut -d "=" -f 1)
+		key=$(trim $key)
+		val=$(echo "$line" | cut -d "=" -f 2)
+		val=$(trim $val)
+		config[$key]=$val
+	    fi
+	done < $conffile
+fi
+
+#set up the logging
+logfile=${config[logfileCS]}
+errorlogfile=${config[errorlogfileCS]}
+cachepath=${config[cache_location_CS]}
+data=${config[data]}
+user=${config[user]}
+pass=${config[pass]}
+snmp_version=${config[snmp_version]}
+snmp_user=${config[snmp_user]}
+snmp_protocol_1=${config[snmp_protocol_1]}
+snmp_password_1=${config[snmp_password_1]}
+snmp_protocol_2=${config[snmp_protocol_2]}
+snmp_password_2=${config[snmp_password_2]}
+snmp_auth=${config[snmp_auth]}
+snmp_community=${config[snmp_community]}
+
+function checkandalert() {
+	changed=0
+	res="$1"
+	array=(${res// / })
+	sqltest="SELECT wgClusterEnabled, wgFirstMemberId, wgFirstMemberRole, wgFirstMemberSystemHealth, wgFirstMemberHardwareHealth, wgFirstMemberMonitorPortHealth, wgFirstMemberWeightAvg, wgSecondMemberId, wgSecondMemberRole, wgSecondMemberSystemHealth, wgSecondMemberHardwareHealth, wgSecondMemberMonitorPortHealth,wgSecondMemberWeightAvg FROM device_clusters_log WHERE cluster_id=$2 AND time_logged=(SELECT MAX(time_logged) FROM device_clusters_log WHERE cluster_id=$2);"
+
+	resultsql=$(mysql -u${user} -p${pass} ${data} -se "${sqltest}")
+	resultsnmp="${array[1]} ${array[3]} ${array[5]} ${array[7]} ${array[9]} ${array[11]} ${array[13]} ${array[15]} ${array[17]} ${array[19]} ${array[21]} ${array[23]} ${array[25]}"
+
+	arrsql=(${resultsql// / })
+	arrsnmp=(${resultsnmp// / })
+
+	sql2="SELECT clustername FROM device_clusters WHERE id=$2"
+	clhostname=$(mysql -u${user} -p${pass} ${data} -se "${sql2}")
+	
+	alert=0
+	changed=0
+	msg=""
+
+	if [ "${arrsql[1]}" != "${arrsnmp[1]}" ]; then
+		msg=$msg"serial of Member 1 has changed, from ${arrsql[1]} to ${arrsnmp[1]}${NL}"
+		changed=1
+	fi
+
+	if [ "${arrsql[2]}" -ne "${arrsnmp[2]}" ]; then
+		r1=$(getrole ${arrsql[2]})
+		r2=$(getrole ${arrsnmp[2]})
+
+                msg=$msg'the role of Member 1 has changed, from '$r1' to '$r2$'\n'
+#		echo $msg
+		changed=1
+
+		#send an alert message
+		alert=1
+        fi
+
+	if [ "${arrsql[3]}" -ne "${arrsnmp[3]}" ]; then
+                msg=$msg"the system health of Member 1 has changed, from ${arrsql[3]} to ${arrsnmp[3]}${NL}"
+#		echo $msg
+		changed=1
+        fi
+
+	if [ "${arrsql[4]}" -ne "${arrsnmp[4]}" ]; then
+                msg=$msg"the hardware health of Member 1 has changed, from ${arrsql[4]} to ${arrsnmp[4]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+	if [ "${arrsql[5]}" -ne "${arrsnmp[5]}" ]; then
+                msg=$msg"the sync port health of Member 1 has changed, from ${arrsql[5]} to ${arrsnmp[5]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+	if [ "${arrsql[6]}" -ne "${arrsnmp[6]}" ]; then
+                msg=$msg"the weight average of Member 1 has changed, from ${arrsql[6]} to ${arrsnmp[6]}${NL}"
+#		echo $msg 
+                changed=1
+        fi
+
+	if [ "${arrsql[7]}" != "${arrsnmp[7]}" ]; then
+                msg=$msg"serial of Member 2 has changed, from ${arrsql[7]} to ${arrsnmp[7]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+        if [ "${arrsql[8]}" -ne "${arrsnmp[8]}" ]; then
+		r1=$(getrole ${arrsql[8]})
+                r2=$(getrole ${arrsnmp[8]})
+
+                msg=$msg"the role of Member 2 has changed, from $r1 to $r2${NL}"
+#		echo $msg
+                changed=1
+
+		#send an alert message
+		alert=1;
+        fi
+
+        if [ "${arrsql[9]}" -ne "${arrsnmp[9]}" ]; then
+                msg=$msg"the system health of Member 2 has changed, from ${arrsql[9]} to ${arrsnmp[9]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+        if [ "${arrsql[10]}" -ne "${arrsnmp[10]}" ]; then
+                msg=$msg"the hardware health of Member 2 has changed, from ${arrsql[10]} to ${arrsnmp[10]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+        if [ "${arrsql[11]}" -ne "${arrsnmp[11]}" ]; then
+                msg=$msg"the sync port health of Member 2 has changed, from ${arrsql[11]} to ${arrsnmp[11]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+        if [ "${arrsql[12]}" -ne "${arrsnmp[12]}" ]; then
+                msg=$msg"the weight average of Member 2 has changed, from ${arrsql[12]} to ${arrsnmp[12]}${NL}"
+#		echo $msg
+                changed=1
+        fi
+
+	if [ $alert == 1 ]; then
+		echo "sending alert for $clhostname..."
+		wg_mail "cs.red.be@nuvias.com" "Critical HA Event on $clhostname" "$msg"
+
+		sql="INSERT INTO device_clusters_alertlog (cluster,message,time_logged) VALUE ($2,'$msg',DEFAULT);"
+		mysql -u${user} -p${pass} ${data} -se "${sql}"
+	else
+		echo "nothing changed, no alert sent."
+	fi
+ }
+
+#get list of devices from mysql , which are clusters
+sql="SELECT id,device_id,clustername,hostname,sysName FROM device_clusters LEFT JOIN devices ON device=device_id ORDER BY clustername"
+
+while read line
+do 
+	clearvars
+
+	cluster_id=$(echo $line | cut -d " " -f 1)
+	cluster_device_id=$(echo $line | cut -d " " -f 2)
+	cluster_name=$(echo $line | cut -d " " -f 3)
+	cluster_hostname=$(echo $line | cut -d " " -f 4)
+	cluster_sysname=$(echo $line | cut -d " " -f 5)
+	
+	echo "querying cluster $cluster_id $cluster_name on $cluster_hostname"
+	
+	query="SELECT authlevel,authname,authpass,authalgo,snmpver,cryptopass,cryptoalgo,community FROM devices WHERE hostname='$cluster_hostname'"
+	mysql_result=$(mysql -ulibrenms -pncc1701z -se"$query" -Dlibrenms --skip-column-names)
+
+	snmp_auth=$(echo $mysql_result | cut -d " " -f 1)
+	snmp_user=$(echo $mysql_result | cut -d " " -f 2)
+	snmp_password_1=$(echo $mysql_result | cut -d " " -f 3)
+	snmp_protocol_1=$(echo $mysql_result | cut -d " " -f 4)
+	snmp_version=$(echo $mysql_result | cut -d " " -f 5)
+	snmp_password_2=$(echo $mysql_result | cut -d " " -f 6)
+	snmp_protocol_2=$(echo $mysql_result | cut -d " " -f 7)
+	snmp_community=$(echo $mysql_result | cut -d " " -f 8)
+	
+	ts=dattim
+	ip=$cluster_hostname
+	
+	if [[ "$snmp_auth" == "NULL" ]]; then
+		if result=$(snmpwalk -Ov -$snmp_version -c $snmp_community $ip 1.3.6.1.4.1.3097.6.6); then
+			array=(${result// / })
+			checkandalert "$result" $cluster_id
+			sql2="INSERT INTO device_clusters_log (cluster_id, wgClusterEnabled, wgFirstMemberId, wgFirstMemberRole, wgFirstMemberSystemHealth, wgFirstMemberHardwareHealth, wgFirstMemberMonitorPortHealth, wgFirstMemberWeightAvg, wgSecondMemberId, wgSecondMemberRole, wgSecondMemberSystemHealth, wgSecondMemberHardwareHealth, wgSecondMemberMonitorPortHealth,wgSecondMemberWeightAvg, time_logged) VALUES ($cluster_id, ${array[1]}, '${array[3]}', ${array[5]}, ${array[7]}, ${array[9]}, ${array[11]}, ${array[13]}, '${array[15]}', ${array[17]}, ${array[19]}, ${array[21]}, ${array[23]}, ${array[25]},DEFAULT);"
+			mysql -u${user} -p${pass} ${data} -se "${sql2}"
+		fi
+	else
+		if result=$(snmpwalk -Ov -$snmp_version -l $snmp_auth -u $snmp_user -a $snmp_protocol_1 -A $snmp_password_1 -x $snmp_protocol_2 -X $snmp_password_2 $ip 1.3.6.1.4.1.3097.6.6); then	
+			array=(${result// / })
+			checkandalert "$result" $cluster_id
+			sql2="INSERT INTO device_clusters_log (cluster_id, wgClusterEnabled, wgFirstMemberId, wgFirstMemberRole, wgFirstMemberSystemHealth, wgFirstMemberHardwareHealth, wgFirstMemberMonitorPortHealth, wgFirstMemberWeightAvg, wgSecondMemberId, wgSecondMemberRole, wgSecondMemberSystemHealth, wgSecondMemberHardwareHealth, wgSecondMemberMonitorPortHealth,wgSecondMemberWeightAvg, time_logged) VALUES ($cluster_id, ${array[1]}, '${array[3]}', ${array[5]}, ${array[7]}, ${array[9]}, ${array[11]}, ${array[13]}, '${array[15]}', ${array[17]}, ${array[19]}, ${array[21]}, ${array[23]}, ${array[25]},DEFAULT);"
+			mysql -u${user} -p${pass} ${data} -se "${sql2}"
+		fi
+	fi	
+
+done < <(mysql -u${user} -p${pass} ${data} -se "${sql}" --skip-column-names)

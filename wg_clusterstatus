@@ -1,0 +1,112 @@
+#!/bin/bash 
+#title : 	wg_clusterstatus
+#description :	This script will get the cluster status (with SNMP) and parse results 
+#author :	Wouter Vanbelleghem<wouter.vanbelleghem@nuvias.com> 
+#date :		28/01/2019 
+#version :	0.1 
+#usage :	wg_clusterstatus (device ip) 
+#notes :	depends on SNMPwalk and SNMPget
+#==============================================================================
+
+function trim() {
+        echo -e "$1" | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//'
+}
+function dat() {
+        d=$(date -d $1 +%d)
+        m=$(date -d $1 +%m)
+        y=$(date -d $1 +%Y)
+        echo "$d-$m-$y"
+}
+conffile="/etc/watchguard/wg.conf" 
+start=$(date +%s) 
+#echo "Reading config values from $conffile..." 
+
+declare -A config
+#read the config file in /etc/watchguard, if it don't exist use default values
+if [[ -e $conffile ]]; then
+	while read line
+	do
+	    if [[ $line == *"="* && $line != *"#"* ]]; then
+       		key=$(echo "$line" | cut -d "=" -f 1)
+		key=$(trim $key)
+		val=$(echo "$line" | cut -d "=" -f 2)
+		val=$(trim $val)
+		config[$key]=$val
+	    fi
+	done < $conffile
+fi
+
+#set up the logging
+logfile=${config[logfileCS]}
+errorlogfile=${config[errorlogfileCS]}
+cachepath=${config[cache_location_CS]}
+
+ip=$1
+
+snmp_version=${config[snmp_version]}
+snmp_user=${config[snmp_user]}
+snmp_protocol_1=${config[snmp_protocol_1]}
+snmp_password_1=${config[snmp_password_1]}
+snmp_protocol_2=${config[snmp_protocol_2]}
+snmp_password_2=${config[snmp_password_2]}
+snmp_auth=${config[snmp_auth]}
+snmp_community=${config[snmp_community]}
+
+query="SELECT authlevel,authname,authpass,authalgo,snmpver,cryptopass,cryptoalgo,community FROM devices WHERE hostname='$ip'"
+mysql_result=$(mysql -ulibrenms -pncc1701z -se"$query" -Dlibrenms --skip-column-names)
+
+#echo $mysql_result
+
+snmp_auth=$(echo $mysql_result | cut -d " " -f 1)
+snmp_user=$(echo $mysql_result | cut -d " " -f 2)
+snmp_password_1=$(echo $mysql_result | cut -d " " -f 3)
+snmp_protocol_1=$(echo $mysql_result | cut -d " " -f 4)
+snmp_version=$(echo $mysql_result | cut -d " " -f 5)
+snmp_password_2=$(echo $mysql_result | cut -d " " -f 6)
+snmp_protocol_2=$(echo $mysql_result | cut -d " " -f 7)
+snmp_community=$(echo $mysql_result | cut -d " " -f 8)
+
+if [[ "$snmp_auth" == "NULL" ]]; then
+	if result=$(snmpwalk -Ov -$snmp_version -c $snmp_community $ip 1.3.6.1.4.1.3097.6.6); then
+		array=(${result// / })
+
+        tmp="{"
+        tmp=$tmp"\"wgClusterEnabled\" : ${array[1]},  "
+        tmp=$tmp"\"wgFirstMemberId\" : ${array[3]},  "
+        tmp=$tmp"\"wgFirstMemberRole\" : ${array[5]},  "
+        tmp=$tmp"\"wgFirstMemberSystemHealth\" : ${array[7]},  "
+        tmp=$tmp"\"wgFirstMemberHardwareHealth\" : ${array[9]},  "
+        tmp=$tmp"\"wgFirstMemberMonitorPortHealth\" : ${array[11]},  "
+        tmp=$tmp"\"wgFirstMemberWeightAvg\" : ${array[13]},  "
+        tmp=$tmp"\"wgSecondMemberId\" : ${array[15]},  "
+        tmp=$tmp"\"wgSecondMemberRole\" : ${array[17]},  "
+        tmp=$tmp"\"wgSecondMemberSystemHealth\" : ${array[19]},  "
+        tmp=$tmp"\"wgSecondMemberHardwareHealth\" : ${array[21]},  "
+        tmp=$tmp"\"wgSecondMemberMonitorPortHealth\" : ${array[23]} ,"
+	tmp=$tmp"\"wgSecondMemberWeightAvg\" : ${array[25]} }  "
+
+        echo $tmp
+	fi
+else
+	if result=$(snmpwalk -Ov -$snmp_version -l $snmp_auth -u $snmp_user -a $snmp_protocol_1 -A $snmp_password_1 -x $snmp_protocol_2 -X $snmp_password_2 $ip 1.3.6.1.4.1.3097.6.6); then	
+	array=(${result// / })
+
+	tmp="{"
+	tmp=$tmp"\"wgClusterEnabled\" : ${array[1]},  "
+	tmp=$tmp"\"wgFirstMemberId\" : ${array[3]},  "
+	tmp=$tmp"\"wgFirstMemberRole\" : ${array[5]},  "
+	tmp=$tmp"\"wgFirstMemberSystemHealth\" : ${array[7]},  "
+	tmp=$tmp"\"wgFirstMemberHardwareHealth\" : ${array[9]},  "
+	tmp=$tmp"\"wgFirstMemberMonitorPortHealth\" : ${array[11]},  "
+	tmp=$tmp"\"wgFirstMemberWeightAvg\" : ${array[13]},  "
+	tmp=$tmp"\"wgSecondMemberId\" : ${array[15]},  "
+	tmp=$tmp"\"wgSecondMemberRole\" : ${array[17]},  "
+	tmp=$tmp"\"wgSecondMemberSystemHealth\" : ${array[19]},  "
+	tmp=$tmp"\"wgSecondMemberHardwareHealth\" : ${array[21]},  "
+	tmp=$tmp"\"wgSecondMemberMonitorPortHealth\" : ${array[23]} ,"
+	tmp=$tmp"\"wgSecondMemberWeightAvg\" : ${array[25]} } "
+
+	echo $tmp
+	fi
+fi
+
