@@ -5,7 +5,7 @@
 #date :		28/01/2019 
 #version :	0.1 
 #usage :	wg_clusterstatus (device ip) 
-#notes :	depends on SNMPwalk and SNMPget
+#notes :	depends on SNMPwalk and SNMPget and mysql
 #==============================================================================
 
 function trim() {
